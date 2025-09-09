@@ -1,3 +1,8 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/prefer-as-const */
+/* eslint-disable prefer-const */
+//eslint-disable no-console 
 import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { StepsList } from '../components/StepsList';
@@ -12,15 +17,7 @@ import { parseXml } from '../steps';
 import { useWebContainer } from '../hooks/useWebContainer';
 import { FileNode } from '@webcontainer/api';
 import { Loader } from '../components/Loader';
-
-const MOCK_FILE_CONTENT = `// This is a sample file content
-import React from 'react';
-
-function Component() {
-  return <div>Hello World</div>;
-}
-
-export default Component;`;
+import { WebContainer } from '@webcontainer/api';
 
 export function Builder() {
   const location = useLocation();
@@ -39,74 +36,90 @@ export function Builder() {
 
   const [files, setFiles] = useState<FileItem[]>([]);
 
+  // Process pending steps and update files
   useEffect(() => {
-    let originalFiles = [...files];
-    let updateHappened = false;
-    steps.filter(({status}) => status === "pending").map(step => {
-      updateHappened = true;
-      if (step?.type === StepType.CreateFile) {
-        let parsedPath = step.path?.split("/") ?? []; // ["src", "components", "App.tsx"]
-        let currentFileStructure = [...originalFiles]; // {}
-        let finalAnswerRef = currentFileStructure;
-  
-        let currentFolder = ""
-        while(parsedPath.length) {
-          currentFolder =  `${currentFolder}/${parsedPath[0]}`;
-          let currentFolderName = parsedPath[0];
-          parsedPath = parsedPath.slice(1);
-  
-          if (!parsedPath.length) {
-            // final file
-            let file = currentFileStructure.find(x => x.path === currentFolder)
-            if (!file) {
-              currentFileStructure.push({
-                name: currentFolderName,
-                type: 'file',
-                path: currentFolder,
-                content: step.code
-              })
+    const pendingSteps = steps.filter(({status}) => status === "pending");
+    
+    if (pendingSteps.length === 0) return;
+
+    setFiles(currentFiles => {
+      let newFiles = [...currentFiles];
+      let hasChanges = false;
+
+      pendingSteps.forEach(step => {
+        if (step?.type === StepType.CreateFile && step.path && step.code) {
+          hasChanges = true;
+          const parsedPath = step.path.split("/");
+          let currentFileStructure = newFiles;
+          let finalAnswerRef = currentFileStructure;
+
+          let currentFolder = "";
+          for (let i = 0; i < parsedPath.length; i++) {
+            const currentFolderName = parsedPath[i];
+            currentFolder = `${currentFolder}/${currentFolderName}`;
+
+            if (i === parsedPath.length - 1) {
+              // Final file
+              const existingFileIndex = currentFileStructure.findIndex(x => x.path === currentFolder);
+              if (existingFileIndex === -1) {
+                currentFileStructure.push({
+                  name: currentFolderName,
+                  type: 'file',
+                  path: currentFolder,
+                  content: step.code
+                });
+              } else {
+                currentFileStructure[existingFileIndex] = {
+                  ...currentFileStructure[existingFileIndex],
+                  content: step.code
+                };
+              }
             } else {
-              file.content = step.code;
+              // In a folder
+              let folderIndex = currentFileStructure.findIndex(x => x.path === currentFolder);
+              if (folderIndex === -1) {
+                // Create the folder
+                const newFolder: FileItem = {
+                  name: currentFolderName,
+                  type: 'folder',
+                  path: currentFolder,
+                  children: []
+                };
+                currentFileStructure.push(newFolder);
+                folderIndex = currentFileStructure.length - 1;
+              }
+
+              if (!currentFileStructure[folderIndex].children) {
+                currentFileStructure[folderIndex].children = [];
+              }
+              currentFileStructure = currentFileStructure[folderIndex].children!;
             }
-          } else {
-            /// in a folder
-            let folder = currentFileStructure.find(x => x.path === currentFolder)
-            if (!folder) {
-              // create the folder
-              currentFileStructure.push({
-                name: currentFolderName,
-                type: 'folder',
-                path: currentFolder,
-                children: []
-              })
-            }
-  
-            currentFileStructure = currentFileStructure.find(x => x.path === currentFolder)!.children!;
           }
+          newFiles = finalAnswerRef;
         }
-        originalFiles = finalAnswerRef;
+      });
+
+      if (hasChanges) {
+        // Mark all pending steps as completed
+        setSteps(currentSteps => 
+          currentSteps.map(step => ({
+            ...step,
+            status: step.status === "pending" ? "completed" : step.status
+          }))
+        );
       }
 
-    })
+      return newFiles;
+    });
+  }, [steps]);
 
-    if (updateHappened) {
-
-      setFiles(originalFiles)
-      setSteps(steps => steps.map((s: Step) => {
-        return {
-          ...s,
-          status: "completed"
-        }
-        
-      }))
-    }
-    console.log(files);
-  }, [steps, files]);
-
+  // Mount files to webcontainer
   useEffect(() => {
+    if (!webcontainer || files.length === 0) return;
+
     const createMountStructure = (files: FileItem[]): Record<string, any> => {
       const mountStructure: Record<string, any> = {};
-  
+
       const processFile = (file: FileItem, isRootFolder: boolean) => {  
         if (file.type === 'folder') {
           // For folders, create a directory entry
@@ -133,25 +146,27 @@ export function Builder() {
             };
           }
         }
-  
+
         return mountStructure[file.name];
       };
-  
+
       // Process each top-level file/folder
       files.forEach(file => processFile(file, true));
-  
+
       return mountStructure;
     };
-  
+
     const mountStructure = createMountStructure(files);
-  
-    // Mount the structure if WebContainer is available
-    console.log(mountStructure);
-    webcontainer?.mount(mountStructure);
+    console.log('Mounting structure:', mountStructure);
+    webcontainer.mount(mountStructure);
   }, [files, webcontainer]);
-  //console.log(files);
 
   async function init() {
+    // Clear previous state
+    setFiles([]);
+    setSteps([]);
+    setLlmMessages([]);
+    
     const response = await axios.post(`${BACKEND_URL}/template`, {
       prompt: prompt.trim()
     });
@@ -159,10 +174,18 @@ export function Builder() {
     
     const {prompts, uiPrompts} = response.data;
 
-    setSteps(parseXml(uiPrompts[0]).map((x: Step) => ({
-      ...x,
-      status: "pending"
-    })));
+    console.log('Template response:', response.data);
+    console.log('UI Prompts:', uiPrompts);
+
+    if (uiPrompts && uiPrompts[0]) {
+      const initialSteps = parseXml(uiPrompts[0]);
+      console.log('Initial steps from template:', initialSteps);
+      
+      setSteps(initialSteps.map((x: Step) => ({
+        ...x,
+        status: "pending"
+      })));
+    }
 
     setLoading(true);
     const stepsResponse = await axios.post(`${BACKEND_URL}/chat`, {
@@ -170,44 +193,32 @@ export function Builder() {
         role: "user",
         content
       }))
-    })
+    });
 
     setLoading(false);
 
-    setSteps(s => [...s, ...parseXml(stepsResponse.data.response).map(x => ({
+    console.log('LLM Response:', stepsResponse.data.response);
+    
+    const newSteps = parseXml(stepsResponse.data.response);
+    console.log('Parsed steps from LLM:', newSteps);
+
+    setSteps(s => [...s, ...newSteps.map(x => ({
       ...x,
       status: "pending" as "pending"
     }))]);
 
-    setLlmMessages([...prompts, prompt].map(content => ({
-      role: "user",
+    const userMessages = [...prompts, prompt].map(content => ({
+      role: "user" as const,
       content
-    })));
+    }));
 
-    setLlmMessages(x => [...x, {role: "assistant", content: stepsResponse.data.response}])
+    setLlmMessages(userMessages);
+    setLlmMessages(x => [...x, {role: "assistant", content: stepsResponse.data.response}]);
   }
 
   useEffect(() => {
     init();
   }, [])
-
-  useEffect(() => {
-    if (files.length > 0 && !selectedFile) {
-      // Recursively find the first file in the file tree
-      const findFirstFile = (items) => {
-        for (const item of items) {
-          if (item.type === 'file') return item;
-          if (item.type === 'folder' && item.children) {
-            const found = findFirstFile(item.children);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      const firstFile = findFirstFile(files);
-      if (firstFile) setSelectedFile(firstFile);
-    }
-  }, [files, selectedFile]);
 
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col">
@@ -237,9 +248,13 @@ export function Builder() {
                   }} className='p-2 w-full'></textarea>
                   <button onClick={async () => {
                     const newMessage = {
+                      // eslint-disable-next-line @typescript-eslint/prefer-as-const
                       role: "user" as "user",
                       content: userPrompt
                     };
+
+                    console.log('Sending additional prompt:', userPrompt);
+                    console.log('Current LLM messages:', llmMessages);
 
                     setLoading(true);
                     const stepsResponse = await axios.post(`${BACKEND_URL}/chat`, {
@@ -247,16 +262,24 @@ export function Builder() {
                     });
                     setLoading(false);
 
+                    console.log('Additional LLM Response:', stepsResponse.data.response);
+                    
+                    const additionalSteps = parseXml(stepsResponse.data.response);
+                    console.log('Additional parsed steps:', additionalSteps);
+
                     setLlmMessages(x => [...x, newMessage]);
                     setLlmMessages(x => [...x, {
                       role: "assistant",
                       content: stepsResponse.data.response
                     }]);
                     
-                    setSteps(s => [...s, ...parseXml(stepsResponse.data.response).map(x => ({
+                    setSteps(s => [...s, ...additionalSteps.map(x => ({
                       ...x,
                       status: "pending" as "pending"
                     }))]);
+
+                    // Clear the input
+                    setPrompt("");
 
                   }} className='bg-purple-400 px-4'>Send</button>
                   </div>}
@@ -276,7 +299,7 @@ export function Builder() {
               {activeTab === 'code' ? (
                 <CodeEditor file={selectedFile} />
               ) : (
-                <PreviewFrame webContainer={webcontainer} files={files} />
+                webcontainer && <PreviewFrame webContainer={webcontainer} files={files} />
               )}
             </div>
           </div>

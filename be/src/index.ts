@@ -1,66 +1,86 @@
-require("dotenv").config();
 import express from "express";
-import Anthropic from "@anthropic-ai/sdk";
-import { BASE_PROMPT, getSystemPrompt } from "./prompts";
-import { ContentBlock, TextBlock } from "@anthropic-ai/sdk/resources";
-import {basePrompt as nodeBasePrompt} from "./defaults/node";
-import {basePrompt as reactBasePrompt} from "./defaults/react";
 import cors from "cors";
+import dotenv from "dotenv";
+dotenv.config();
 
-const anthropic = new Anthropic();
+import { BASE_PROMPT, getSystemPrompt } from "./prompts";
+import { basePrompt as nodeBasePrompt } from "./defaults/node";
+import { basePrompt as reactBasePrompt } from "./defaults/react";
+
 const app = express();
-app.use(cors())
-app.use(express.json())
+app.use(cors());
+app.use(express.json());
 
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL = "deepseek/deepseek-chat-v3-0324:free";
+const HEADERS = {
+  "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+  "HTTP-Referer": "<YOUR_SITE_URL>",
+  "X-Title": "<YOUR_SITE_NAME>",
+  "Content-Type": "application/json"
+};
+
+async function callOpenRouter(messages: any[], systemPrompt?: string) {
+ 
+  const body = {
+    model: MODEL,
+    messages,...(systemPrompt ? { system: systemPrompt } : {})
+  };
+
+  const res = await fetch(OPENROUTER_API_URL, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`OpenRouter error: ${errText}`);
+  }
+
+  const data = await res.json();
+  return data.choices[0].message.content;
+}
 app.post("/template", async (req, res) => {
+  try {
     const prompt = req.body.prompt;
-    
-    const response = await anthropic.messages.create({
-        messages: [{
-            role: 'user', content: prompt
-        }],
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 200,
-        system: "Return either node or react based on what do you think this project should be. Only return a single word either 'node' or 'react'. Do not return anything extra"
-    })
+    const messages = [{ role: "user", content: prompt }];
 
-    const answer = (response.content[0] as TextBlock).text; // react or node
-    if (answer == "react") {
-        res.json({
-            prompts: [BASE_PROMPT, `Here is an artifact that contains all files of the project visible to you.\nConsider the contents of ALL files in the project.\n\n${reactBasePrompt}\n\nHere is a list of files that exist on the file system but are not being shown to you:\n\n  - .gitignore\n  - package-lock.json\n`],
-            uiPrompts: [reactBasePrompt]
-        })
-        return;
+    const responseText = await callOpenRouter(messages, "Return either node or react based on what do you think this project should be. Only return a single word either 'node' or 'react'. Do not return anything extra");
+    console.log("🔍 Model response:", responseText);
+    const answer = responseText.toLowerCase().trim();
+
+    if (answer.includes("react")) {
+      res.json({
+        prompts: [BASE_PROMPT, `...${reactBasePrompt}`],
+        uiPrompts: [reactBasePrompt]
+      });
+    } else if (answer.includes("node")) {
+      res.json({
+        prompts: [BASE_PROMPT, `...${nodeBasePrompt}`],
+        uiPrompts: [nodeBasePrompt]
+      });
+    } else {
+      res.status(403).json({ message: "You can't access this" });
     }
-
-    if (answer === "node") {
-        res.json({
-            prompts: [`Here is an artifact that contains all files of the project visible to you.\nConsider the contents of ALL files in the project.\n\n${reactBasePrompt}\n\nHere is a list of files that exist on the file system but are not being shown to you:\n\n  - .gitignore\n  - package-lock.json\n`],
-            uiPrompts: [nodeBasePrompt]
-        })
-        return;
-    }
-
-    res.status(403).json({message: "You cant access this"})
-    return;
-
-})
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
 
 app.post("/chat", async (req, res) => {
+  try {
     const messages = req.body.messages;
-    const response = await anthropic.messages.create({
-        messages: messages,
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 8000,
-        system: getSystemPrompt()
-    })
+   // console.log("Received messages:", messages);
+    const systemPrompt = getSystemPrompt();
+    const reply = await callOpenRouter(messages, systemPrompt);
+    console.log("chat response to frontend:", {response: reply});
 
-    console.log(response);
+    res.json({ response: reply });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
 
-    res.json({
-        response: (response.content[0] as TextBlock)?.text
-    });
-})
-
-app.listen(3000);
-
+app.listen(3002, () => console.log("Server listening on port 3002"));
+export default app;
