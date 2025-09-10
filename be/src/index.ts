@@ -13,8 +13,8 @@ app.use(cors());
 app.use(express.json());
 
 const openai = new OpenAI({
-  baseURL: 'https://api.deepseek.com',
-  apiKey: process.env.APIKEY
+  baseURL: 'https://openrouter.ai/api/v1',
+  apiKey: process.env.OPENROUTER_API_KEY
 })
 
  app.post("/template", async (req, res) => {
@@ -27,12 +27,12 @@ const openai = new OpenAI({
         { role: "user", content: prompt }
       ],
       max_tokens: 200,
-      model: "deepseek-chat",
+      model: "openai/gpt-oss-120b:free",
     });
 
     //const responseText= await main(messages, "Return either node or react based on what do you think this project should be. Only return a single word either 'node' or 'react'. Do not return anything extra");
-    console.log("🔍 Model response:", response);
     const answer = (response.choices[0].message.content)
+    console.log(answer);
 
     if (answer?.includes("react")) {
       res.json({
